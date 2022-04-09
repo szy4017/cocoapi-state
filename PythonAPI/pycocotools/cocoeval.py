@@ -70,8 +70,12 @@ class COCOeval:
         self.cocoDt   = cocoDt              # detections COCO API
         self.evalImgs = defaultdict(list)   # per-image per-category evaluation results [KxAxI] elements
         self.eval     = {}                  # accumulated evaluation results
-        self._gts = defaultdict(list)       # gt for evaluation
-        self._dts = defaultdict(list)       # dt for evaluation
+        self._gts = defaultdict(list)           # gt for intermediate evaluation
+        self._dts = defaultdict(list)           # dt for intermediate evaluation
+        self._gts_cls = defaultdict(list)       # gt for class evaluation
+        self._dts_cls = defaultdict(list)       # dt for class evaluation
+        self._gts_sta = defaultdict(list)       # gt for state evaluation
+        self._dts_sta = defaultdict(list)       # dt for state evaluation
         self.params = Params(iouType=iouType) # parameters
         self._paramsEval = {}               # parameters for evaluation
         self.stats = []                     # result summarization
@@ -79,6 +83,7 @@ class COCOeval:
         if not cocoGt is None:
             self.params.imgIds = sorted(cocoGt.getImgIds())
             self.params.catIds = sorted(cocoGt.getCatIds())
+            self.params.staIds = sorted(cocoGt.getStaIds()) # 获取groundtruth的入侵标签ID
 
 
     def _prepare(self):
@@ -105,16 +110,23 @@ class COCOeval:
             _toMask(dts, self.cocoDt)
         # set ignore flag
         for gt in gts:
-            gt['ignore'] = gt['ignore'] if 'ignore' in gt else 0
+            gt['ignore'] = gt['ignore'] if 'ignore' in gt else 0    # 添加igonre字段
             gt['ignore'] = 'iscrowd' in gt and gt['iscrowd']
             if p.iouType == 'keypoints':
                 gt['ignore'] = (gt['num_keypoints'] == 0) or gt['ignore']
-        self._gts = defaultdict(list)       # gt for evaluation
-        self._dts = defaultdict(list)       # dt for evaluation
+        # 这种声明方式产生的self._gts是一个字典，每个元素是列表
+        # 这样得到的就是相同的img_id和类别id的信息，存放在一个列表中，即一张图像的同一个类别的框在一个列表中
+        self._gts_cls = defaultdict(list)       # gt for class evaluation
+        self._dts_cls = defaultdict(list)       # dt for class evaluation
+        self._gts_sta = defaultdict(list)       # gt for state evaluation
+        self._dts_sta = defaultdict(list)       # dt for state evaluation
+        ## 增加state编号
         for gt in gts:
-            self._gts[gt['image_id'], gt['category_id']].append(gt)
+            self._gts_cls[gt['image_id'], gt['category_id']].append(gt)
+            self._gts_sta[gt['image_id'], gt['state']].append(gt)
         for dt in dts:
-            self._dts[dt['image_id'], dt['category_id']].append(dt)
+            self._dts_cls[dt['image_id'], dt['category_id']].append(dt)
+            self._dts_sta[dt['image_id'], dt['state']].append(dt)
         self.evalImgs = defaultdict(list)   # per-image per-category evaluation results
         self.eval     = {}                  # accumulated evaluation results
 
@@ -145,7 +157,7 @@ class COCOeval:
             computeIoU = self.computeIoU
         elif p.iouType == 'keypoints':
             computeIoU = self.computeOks
-        self.ious = {(imgId, catId): computeIoU(imgId, catId) \
+        self.ious = {(imgId, catId): computeIoU(imgId, catId, mode='cls') \
                         for imgId in p.imgIds
                         for catId in catIds}
 
@@ -160,11 +172,18 @@ class COCOeval:
         toc = time.time()
         print('DONE (t={:0.2f}s).'.format(toc-tic))
 
-    def computeIoU(self, imgId, catId):
+    def computeIoU(self, imgId, Id, mode):
         p = self.params
+        if mode == 'cls':
+            self._gts = self._gts_cls
+            self._dts = self._dts_cls
+        elif mode == 'sta':
+            self._gts = self._gts_sta
+            self._dts = self._dts_sta
+
         if p.useCats:
-            gt = self._gts[imgId,catId]
-            dt = self._dts[imgId,catId]
+            gt = self._gts[imgId,Id]
+            dt = self._dts[imgId,Id]
         else:
             gt = [_ for cId in p.catIds for _ in self._gts[imgId,cId]]
             dt = [_ for cId in p.catIds for _ in self._dts[imgId,cId]]
@@ -232,6 +251,7 @@ class COCOeval:
                 ious[i, j] = np.sum(np.exp(-e)) / e.shape[0]
         return ious
 
+    # 对单张图片的单个类别的evaluate
     def evaluateImg(self, imgId, catId, aRng, maxDet):
         '''
         perform evaluation for single category and image
@@ -239,11 +259,11 @@ class COCOeval:
         '''
         p = self.params
         if p.useCats:
-            gt = self._gts[imgId,catId]
-            dt = self._dts[imgId,catId]
+            gt = self._gts_cls[imgId, catId]
+            dt = self._dts_cls[imgId, catId]
         else:
-            gt = [_ for cId in p.catIds for _ in self._gts[imgId,cId]]
-            dt = [_ for cId in p.catIds for _ in self._dts[imgId,cId]]
+            gt = [_ for cId in p.catIds for _ in self._gts_cls[imgId, cId]]
+            dt = [_ for cId in p.catIds for _ in self._dts_cls[imgId, cId]]
         if len(gt) == 0 and len(dt) ==0:
             return None
 
@@ -265,16 +285,16 @@ class COCOeval:
         T = len(p.iouThrs)
         G = len(gt)
         D = len(dt)
-        gtm  = np.zeros((T,G))
-        dtm  = np.zeros((T,D))
+        gtm  = np.zeros((T,G))  # 存储的是每一个iou阈值、p.maxDet[-1]下的gt能够匹配到的最大iou对应的模型预测框的id，匹配不到的值是0
+        dtm  = np.zeros((T,D))  # 存储的是每一个iou阈值下的模型预测框匹配到的gt的id，匹配不到的是0；
         gtIg = np.array([g['_ignore'] for g in gt])
         dtIg = np.zeros((T,D))
         if not len(ious)==0:
-            for tind, t in enumerate(p.iouThrs):
+            for tind, t in enumerate(p.iouThrs):    # 计算不同iou阈值下的结果
                 for dind, d in enumerate(dt):
                     # information about best match so far (m=-1 -> unmatched)
                     iou = min([t,1-1e-10])
-                    m   = -1
+                    m = -1    # 如果m = -1代表这个dt没有得到匹配，如果得到匹配m代表dt匹配的最好的gt的索引下标
                     for gind, g in enumerate(gt):
                         # if this gt already matched, and not a crowd, continue
                         if gtm[tind,gind]>0 and not iscrowd[gind]:
@@ -287,7 +307,7 @@ class COCOeval:
                             continue
                         # if match successful and best so far, store appropriately
                         iou=ious[dind,gind]
-                        m=gind
+                        m = gind
                     # if match made store id of match for both dt and gt
                     if m ==-1:
                         continue
@@ -308,6 +328,85 @@ class COCOeval:
                 'dtMatches':    dtm,
                 'gtMatches':    gtm,
                 'dtScores':     [d['score'] for d in dt],
+                'gtIgnore':     gtIg,
+                'dtIgnore':     dtIg,
+            }
+
+    # 对单张图片的单个入侵状态类别的evaluate
+    # 基于evaluateImg修改得到
+    def evaluateImgState(self, imgId, stateId, aRng, maxDet):
+        '''
+        perform evaluation for single intrusion state and image
+        :return: dict (single image results)
+        '''
+        p = self.params
+        gt = self._gts_sta[imgId, stateId]
+        dt = self._dts_sta[imgId, stateId]
+
+        if len(gt) == 0 and len(dt) ==0:
+            return None
+
+        for g in gt:
+            if g['ignore'] or (g['area']<aRng[0] or g['area']>aRng[1]):
+                g['_ignore'] = 1
+            else:
+                g['_ignore'] = 0
+
+        # sort dt highest state_score first, sort gt ignore last
+        gtind = np.argsort([g['_ignore'] for g in gt], kind='mergesort')    # gtind是gt中所有box排序的序号
+        gt = [gt[i] for i in gtind] # 根据gtind的序号对gt进行排序
+        dtind = np.argsort([-d['state_score'] for d in dt], kind='mergesort')     # dtind是dt中所有box排序的序号
+        dt = [dt[i] for i in dtind[0:maxDet]]
+        iscrowd = [int(o['iscrowd']) for o in gt]
+        # load computed ious
+        ious = self.ious[imgId, stateId][:, gtind] if len(self.ious[imgId, stateId]) > 0 else self.ious[imgId, stateId]
+
+        T = len(p.iouThrs)
+        G = len(gt)
+        D = len(dt)
+        gtm  = np.zeros((T,G))  # 存储的是每一个iou阈值、p.maxDet[-1]下的gt能够匹配到的最大iou对应的模型预测框的id，匹配不到的值是0
+        dtm  = np.zeros((T,D))  # 存储的是每一个iou阈值下的模型预测框匹配到的gt的id，匹配不到的是0；
+        gtIg = np.array([g['_ignore'] for g in gt])
+        dtIg = np.zeros((T,D))
+        if not len(ious)==0:
+            for tind, t in enumerate(p.iouThrs):    # 计算不同iou阈值下的结果
+                for dind, d in enumerate(dt):
+                    # information about best match so far (m=-1 -> unmatched)
+                    iou = min([t,1-1e-10])
+                    m = -1    # 如果m = -1代表这个dt没有得到匹配，如果得到匹配m代表dt匹配的最好的gt的索引下标
+                    for gind, g in enumerate(gt):
+                        # if this gt already matched, and not a crowd, continue
+                        if gtm[tind,gind]>0 and not iscrowd[gind]:
+                            continue
+                        # if dt matched to reg gt, and on ignore gt, stop
+                        if m>-1 and gtIg[m]==0 and gtIg[gind]==1:
+                            break
+                        # continue to next gt unless better match made
+                        if ious[dind,gind] < iou:
+                            continue
+                        # if match successful and best so far, store appropriately
+                        iou=ious[dind,gind]
+                        m = gind
+                    # if match made store id of match for both dt and gt
+                    if m ==-1:
+                        continue
+                    dtIg[tind,dind] = gtIg[m]
+                    dtm[tind,dind]  = gt[m]['id']
+                    gtm[tind,m]     = d['id']
+        # set unmatched detections outside of area range to ignore
+        a = np.array([d['area']<aRng[0] or d['area']>aRng[1] for d in dt]).reshape((1, len(dt)))
+        dtIg = np.logical_or(dtIg, np.logical_and(dtm==0, np.repeat(a,T,0)))
+        # store results for given image and category
+        return {
+                'image_id':     imgId,
+                'state_id':     stateId,
+                'aRng':         aRng,
+                'maxDet':       maxDet,
+                'dtIds':        [d['id'] for d in dt],
+                'gtIds':        [g['id'] for g in gt],
+                'dtMatches':    dtm,
+                'gtMatches':    gtm,
+                'dtScores':     [d['state_score'] for d in dt],
                 'gtIgnore':     gtIg,
                 'dtIgnore':     dtIg,
             }
@@ -419,6 +518,114 @@ class COCOeval:
         toc = time.time()
         print('DONE (t={:0.2f}s).'.format( toc-tic))
 
+    # 基于accumulate修改的accumulate_state，替换catIds为staIds
+    def accumulate_state(self, p = None):
+        '''
+        Accumulate per image evaluation results and store the result in self.eval
+        :param p: input params for evaluation
+        :return: None
+        '''
+        print('Accumulating evaluation results...')
+        tic = time.time()
+        if not self.evalImgs:
+            print('Please run evaluate() first')
+        # allows input customized parameters
+        if p is None:
+            p = self.params
+        p.staIds = p.staIds
+        T           = len(p.iouThrs)
+        R           = len(p.recThrs)
+        K           = len(p.staIds)
+        A           = len(p.areaRng)
+        M           = len(p.maxDets)
+        precision   = -np.ones((T,R,K,A,M)) # -1 for the precision of absent categories
+        recall      = -np.ones((T,K,A,M))
+        scores      = -np.ones((T,R,K,A,M))
+
+        # create dictionary for future indexing
+        _pe = self._paramsEval
+        staIds = _pe.staIds
+        setK = set(staIds)
+        setA = set(map(tuple, _pe.areaRng))
+        setM = set(_pe.maxDets)
+        setI = set(_pe.imgIds)
+        # get inds to evaluate
+        k_list = [n for n, k in enumerate(p.staIds)  if k in setK]
+        m_list = [m for n, m in enumerate(p.maxDets) if m in setM]
+        a_list = [n for n, a in enumerate(map(lambda x: tuple(x), p.areaRng)) if a in setA]
+        i_list = [n for n, i in enumerate(p.imgIds)  if i in setI]
+        I0 = len(_pe.imgIds)
+        A0 = len(_pe.areaRng)
+        # retrieve E at each category, area range, and max number of detections
+        for k, k0 in enumerate(k_list):
+            Nk = k0*A0*I0
+            for a, a0 in enumerate(a_list):
+                Na = a0*I0
+                for m, maxDet in enumerate(m_list):
+                    E = [self.evalImgs[Nk + Na + i] for i in i_list]
+                    E = [e for e in E if not e is None]
+                    if len(E) == 0:
+                        continue
+                    dtScores = np.concatenate([e['dtScores'][0:maxDet] for e in E])
+
+                    # different sorting method generates slightly different results.
+                    # mergesort is used to be consistent as Matlab implementation.
+                    inds = np.argsort(-dtScores, kind='mergesort')
+                    dtScoresSorted = dtScores[inds]
+
+                    dtm  = np.concatenate([e['dtMatches'][:,0:maxDet] for e in E], axis=1)[:,inds]
+                    dtIg = np.concatenate([e['dtIgnore'][:,0:maxDet]  for e in E], axis=1)[:,inds]
+                    gtIg = np.concatenate([e['gtIgnore'] for e in E])
+                    npig = np.count_nonzero(gtIg==0 )
+                    if npig == 0:
+                        continue
+                    tps = np.logical_and(               dtm,  np.logical_not(dtIg) )
+                    fps = np.logical_and(np.logical_not(dtm), np.logical_not(dtIg) )
+
+                    tp_sum = np.cumsum(tps, axis=1).astype(dtype=np.float)
+                    fp_sum = np.cumsum(fps, axis=1).astype(dtype=np.float)
+                    for t, (tp, fp) in enumerate(zip(tp_sum, fp_sum)):
+                        tp = np.array(tp)
+                        fp = np.array(fp)
+                        nd = len(tp)
+                        rc = tp / npig
+                        pr = tp / (fp+tp+np.spacing(1))
+                        q  = np.zeros((R,))
+                        ss = np.zeros((R,))
+
+                        if nd:
+                            recall[t,k,a,m] = rc[-1]
+                        else:
+                            recall[t,k,a,m] = 0
+
+                        # numpy is slow without cython optimization for accessing elements
+                        # use python array gets significant speed improvement
+                        pr = pr.tolist(); q = q.tolist()
+
+                        for i in range(nd-1, 0, -1):
+                            if pr[i] > pr[i-1]:
+                                pr[i-1] = pr[i]
+
+                        inds = np.searchsorted(rc, p.recThrs, side='left')
+                        try:
+                            for ri, pi in enumerate(inds):
+                                q[ri] = pr[pi]
+                                ss[ri] = dtScoresSorted[pi]
+                        except:
+                            pass
+                        precision[t,:,k,a,m] = np.array(q)
+                        scores[t,:,k,a,m] = np.array(ss)
+        self.eval = {
+            'params': p,
+            'counts': [T, R, K, A, M],
+            'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'precision': precision,
+            'recall':   recall,
+            'scores': scores,
+        }
+        toc = time.time()
+        print('DONE (t={:0.2f}s).'.format( toc-tic))
+
     def summarize(self):
         '''
         Compute and display summary metrics for evaluation results.
@@ -426,7 +633,7 @@ class COCOeval:
         '''
         def _summarize( ap=1, iouThr=None, areaRng='all', maxDets=100 ):
             p = self.params
-            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>6s} | maxDets={:>3d} ] = {:0.3f}'
+            iStr = ' {:<18} {} @[ IoU={:<9} | area={:>6s} | maxDets={:>3d} ] = {:s}'
             titleStr = 'Average Precision' if ap == 1 else 'Average Recall'
             typeStr = '(AP)' if ap==1 else '(AR)'
             iouStr = '{:0.2f}:{:0.2f}'.format(p.iouThrs[0], p.iouThrs[-1]) \
@@ -449,11 +656,24 @@ class COCOeval:
                     t = np.where(iouThr == p.iouThrs)[0]
                     s = s[t]
                 s = s[:,:,aind,mind]
+            mean_s_list = list()
             if len(s[s>-1])==0:
                 mean_s = -1
             else:
                 mean_s = np.mean(s[s>-1])
-            print(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets, mean_s))
+                if len(s.shape) == 4:
+                    for i in range(s.shape[2]):
+                        s_ = s[:, :, i, :]
+                        mean_s_list.append(float('{:0.3f}'.format(
+                            0.0 if np.all(s_[s_>-1] != s_[s_>-1]) else np.nanmean(s_[s_>-1]))))
+                elif len(s.shape) == 3:
+                    for i in range(s.shape[1]):
+                        s_ = s[:, i, :]
+                        mean_s_list.append(float('{:0.3f}'.format(
+                            0.0 if np.all(s_[s_ > -1] != s_[s_ > -1]) else np.nanmean(s_[s_ > -1]))))
+            mean_s_list.append(float('{:0.3f}'.format(mean_s)))
+            mean_s_list = str(mean_s_list)
+            print(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets, mean_s_list))
             return mean_s
         def _summarizeDets():
             stats = np.zeros((12,))
@@ -502,9 +722,12 @@ class Params:
     def setDetParams(self):
         self.imgIds = []
         self.catIds = []
+        self.staIds = []    # 添加入侵状态ID
         # np.arange causes trouble.  the data point on arange is slightly larger than the true value
-        self.iouThrs = np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
-        self.recThrs = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
+        #self.iouThrs = np.linspace(.5, 0.95, np.round((0.95 - .5) / .05) + 1, endpoint=True)
+        self.iouThrs = np.linspace(.5, 0.95, 9 + 1, endpoint=True)
+        #self.recThrs = np.linspace(.0, 1.00, np.round((1.00 - .0) / .01) + 1, endpoint=True)
+        self.recThrs = np.linspace(.0, 1.00, 100 + 1, endpoint=True)
         self.maxDets = [1, 10, 100]
         self.areaRng = [[0 ** 2, 1e5 ** 2], [0 ** 2, 32 ** 2], [32 ** 2, 96 ** 2], [96 ** 2, 1e5 ** 2]]
         self.areaRngLbl = ['all', 'small', 'medium', 'large']
@@ -514,8 +737,8 @@ class Params:
         self.imgIds = []
         self.catIds = []
         # np.arange causes trouble.  the data point on arange is slightly larger than the true value
-        self.iouThrs = np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
-        self.recThrs = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
+        self.iouThrs = np.linspace(.5, 0.95, np.round((0.95 - .5) / .05) + 1, endpoint=True)
+        self.recThrs = np.linspace(.0, 1.00, np.round((1.00 - .0) / .01) + 1, endpoint=True)
         self.maxDets = [20]
         self.areaRng = [[0 ** 2, 1e5 ** 2], [32 ** 2, 96 ** 2], [96 ** 2, 1e5 ** 2]]
         self.areaRngLbl = ['all', 'medium', 'large']

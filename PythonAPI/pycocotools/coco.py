@@ -176,6 +176,12 @@ class COCO:
         ids = [cat['id'] for cat in cats]
         return ids
 
+    # 获取入侵标签ID
+    def getStaIds(self):
+        stas = self.dataset['intrusion_states']
+        ids = [sta['id'] for sta in stas]
+        return ids
+
     def getImgIds(self, imgIds=[], catIds=[]):
         '''
         Get img ids that satisfy given filter conditions.
@@ -230,7 +236,7 @@ class COCO:
         elif type(ids) == int:
             return [self.imgs[ids]]
 
-    def showAnns(self, anns, draw_bbox=False):
+    def showAnns(self, anns):
         """
         Display the specified annotations.
         :param anns (array of object): annotations to display
@@ -286,14 +292,6 @@ class COCO:
                             plt.plot(x[sk],y[sk], linewidth=3, color=c)
                     plt.plot(x[v>0], y[v>0],'o',markersize=8, markerfacecolor=c, markeredgecolor='k',markeredgewidth=2)
                     plt.plot(x[v>1], y[v>1],'o',markersize=8, markerfacecolor=c, markeredgecolor=c, markeredgewidth=2)
-
-                if draw_bbox:
-                    [bbox_x, bbox_y, bbox_w, bbox_h] = ann['bbox']
-                    poly = [[bbox_x, bbox_y], [bbox_x, bbox_y+bbox_h], [bbox_x+bbox_w, bbox_y+bbox_h], [bbox_x+bbox_w, bbox_y]]
-                    np_poly = np.array(poly).reshape((4,2))
-                    polygons.append(Polygon(np_poly))
-                    color.append(c)
-
             p = PatchCollection(polygons, facecolor=color, linewidths=0, alpha=0.4)
             ax.add_collection(p)
             p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
@@ -301,6 +299,95 @@ class COCO:
         elif datasetType == 'captions':
             for ann in anns:
                 print(ann['caption'])
+
+    def showBBox(self, anns, label_box=True):
+        """
+        show bounding box of annotations or predictions
+        anns: loadAnns() annotations or predictions subject to coco results format
+        label_box: show background of category labels or not
+        """
+        if len(anns) == 0:
+            return 0
+        ax = plt.gca()
+        ax.set_autoscale_on(False)
+        polygons = []
+        color = []
+        image2color = dict()
+        for cat in self.getCatIds():
+            image2color[cat] = (np.random.random((1, 3)) * 0.7 + 0.3).tolist()[0]
+        for ann in anns:
+            c = image2color[ann['category_id']]
+            [bbox_x, bbox_y, bbox_w, bbox_h] = ann['bbox']
+            poly = [[bbox_x, bbox_y], [bbox_x, bbox_y + bbox_h], [bbox_x + bbox_w, bbox_y + bbox_h],
+                    [bbox_x + bbox_w, bbox_y]]
+            np_poly = np.array(poly).reshape((4, 2))
+            polygons.append(Polygon(np_poly))
+            color.append(c)
+            # option for dash-line
+            # ax.add_patch(Polygon(np_poly, linestyle='--', facecolor='none', edgecolor=c, linewidth=2))
+            if label_box:
+                label_bbox = dict(facecolor=c)
+            else:
+                label_bbox = None
+            if 'score' in ann:
+                ax.text(bbox_x, bbox_y, '%s: %.2f' % (self.loadCats(ann['category_id'])[0]['name'], ann['score']),
+                        color='white', bbox=label_bbox)
+            else:
+                ax.text(bbox_x, bbox_y, '%s' % (self.loadCats(ann['category_id'])[0]['name']), color='white',
+                        bbox=label_bbox)
+        # option for filling bounding box
+        # p = PatchCollection(polygons, facecolor=color, linewidths=0, alpha=0.4)
+        # ax.add_collection(p)
+        p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
+        ax.add_collection(p)
+
+    def showIntrusion(self, anns, label_box=True):
+        """
+        show bounding box of annotations or predictions
+        anns: loadAnns() annotations or predictions subject to coco results format
+        label_box: show background of category labels or not
+        """
+        if len(anns) == 0:
+            return 0
+        ax = plt.gca()
+        ax.set_autoscale_on(False)
+        polygons = []
+        color = []
+        image2color = dict()
+        for sta in self.getStaIds():
+            image2color[sta] = (np.random.random((1, 3)) * 0.7 + 0.3).tolist()[0]
+        for ann in anns:
+            c = image2color[ann['state']+1]
+            [bbox_x, bbox_y, bbox_w, bbox_h] = ann['bbox']
+            poly = [[bbox_x, bbox_y], [bbox_x, bbox_y + bbox_h], [bbox_x + bbox_w, bbox_y + bbox_h],
+                    [bbox_x + bbox_w, bbox_y]]
+            np_poly = np.array(poly).reshape((4, 2))
+            polygons.append(Polygon(np_poly))
+            color.append(c)
+            # option for dash-line
+            # ax.add_patch(Polygon(np_poly, linestyle='--', facecolor='none', edgecolor=c, linewidth=2))
+            if ann['state'] == -1:
+                label_name = 'None'
+            elif ann['state'] == 0:
+                label_name = 'Non-Intrusion'
+            elif ann['state'] == 1:
+                label_name = 'Intrusion'
+
+            if label_box:
+                label_bbox = dict(facecolor=c)
+            else:
+                label_bbox = None
+            if 'score' in ann:
+                ax.text(bbox_x, bbox_y, '%s: %.2f' % (label_name, ann['score']),
+                        color='white', bbox=label_bbox)
+            else:
+                ax.text(bbox_x, bbox_y, '%s' % (label_name), color='white',
+                        bbox=label_bbox)
+        # option for filling bounding box
+        # p = PatchCollection(polygons, facecolor=color, linewidths=0, alpha=0.4)
+        # ax.add_collection(p)
+        p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
+        ax.add_collection(p)
 
     def loadRes(self, resFile):
         """
@@ -313,7 +400,7 @@ class COCO:
 
         print('Loading and preparing results...')
         tic = time.time()
-        if type(resFile) == str or (PYTHON_VERSION == 2 and type(resFile) == unicode):
+        if type(resFile) == str:
             anns = json.load(open(resFile))
         elif type(resFile) == np.ndarray:
             anns = self.loadNumpyAnnotations(resFile)
@@ -330,6 +417,7 @@ class COCO:
                 ann['id'] = id+1
         elif 'bbox' in anns[0] and not anns[0]['bbox'] == []:
             res.dataset['categories'] = copy.deepcopy(self.dataset['categories'])
+            res.dataset['intrusion_states'] = copy.deepcopy(self.dataset['intrusion_states'])   # 深拷贝self.dataset['intrusion_states']
             for id, ann in enumerate(anns):
                 bb = ann['bbox']
                 x1, x2, y1, y2 = [bb[0], bb[0]+bb[2], bb[1], bb[1]+bb[3]]
@@ -340,6 +428,7 @@ class COCO:
                 ann['iscrowd'] = 0
         elif 'segmentation' in anns[0]:
             res.dataset['categories'] = copy.deepcopy(self.dataset['categories'])
+            res.dataset['intrusion_states'] = copy.deepcopy(self.dataset['intrusion_states'])   # 深拷贝self.dataset['intrusion_states']
             for id, ann in enumerate(anns):
                 # now only support compressed RLE format as segmentation results
                 ann['area'] = maskUtils.area(ann['segmentation'])
@@ -349,6 +438,7 @@ class COCO:
                 ann['iscrowd'] = 0
         elif 'keypoints' in anns[0]:
             res.dataset['categories'] = copy.deepcopy(self.dataset['categories'])
+            res.dataset['intrusion_states'] = copy.deepcopy(self.dataset['intrusion_states'])   # 深拷贝self.dataset['intrusion_states']
             for id, ann in enumerate(anns):
                 s = ann['keypoints']
                 x = s[0::3]
