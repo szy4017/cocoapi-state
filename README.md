@@ -24,7 +24,12 @@ intruscapes数据集是一个针对行人入侵检测任务的数据集，其图
 git clone https://github.com/szy4017/cocoapi-state.git
 ```
 
-2. 第二步，运行安装脚本`setup.py`
+2. 第二步，安装依赖库`cython`
+```
+pip install cython
+```
+
+3. 第三步，运行安装脚本`setup.py`
 ```
 python setup.py install
 ```
