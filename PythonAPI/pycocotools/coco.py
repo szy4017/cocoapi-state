@@ -341,7 +341,7 @@ class COCO:
         p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
         ax.add_collection(p)
 
-    def showIntrusion(self, anns, label_box=True):
+    def showIntrusion(self, anns, label_box=True, simple_type=False):
         """
         show bounding box of annotations or predictions
         anns: loadAnns() annotations or predictions subject to coco results format
@@ -354,10 +354,14 @@ class COCO:
         polygons = []
         color = []
         image2color = dict()
-        for sta in self.getStaIds():
-            image2color[sta] = (np.random.random((1, 3)) * 0.7 + 0.3).tolist()[0]
+        color_list = ['w', 'b', 'r']
+        for i, sta in enumerate(self.getStaIds()):
+            if simple_type:
+                image2color[sta] = color_list[i]
+            else:
+                image2color[sta] = (np.random.random((1, 3)) * 0.7 + 0.3).tolist()[0]
         for ann in anns:
-            c = image2color[ann['state']+1]
+            c = image2color[ann['state']]
             [bbox_x, bbox_y, bbox_w, bbox_h] = ann['bbox']
             poly = [[bbox_x, bbox_y], [bbox_x, bbox_y + bbox_h], [bbox_x + bbox_w, bbox_y + bbox_h],
                     [bbox_x + bbox_w, bbox_y]]
@@ -366,27 +370,36 @@ class COCO:
             color.append(c)
             # option for dash-line
             # ax.add_patch(Polygon(np_poly, linestyle='--', facecolor='none', edgecolor=c, linewidth=2))
-            if ann['state'] == -1:
+            if ann['state'] == 0:
                 label_name = 'None'
-            elif ann['state'] == 0:
-                label_name = 'Non-Intrusion'
             elif ann['state'] == 1:
+                label_name = 'Non-Intrusion'
+            elif ann['state'] == 2:
                 label_name = 'Intrusion'
 
             if label_box:
                 label_bbox = dict(facecolor=c)
             else:
                 label_bbox = None
-            if 'score' in ann:
-                ax.text(bbox_x, bbox_y, '%s: %.2f' % (label_name, ann['score']),
-                        color='white', bbox=label_bbox)
+
+            if simple_type is not True:
+                if 'score' in ann:
+                    ax.text(bbox_x, bbox_y, '%s: %.2f' % (label_name, ann['score']),
+                            color='white', bbox=label_bbox)
+                else:
+                    ax.text(bbox_x, bbox_y, '%s' % (label_name), color='white',
+                            bbox=label_bbox)
             else:
-                ax.text(bbox_x, bbox_y, '%s' % (label_name), color='white',
-                        bbox=label_bbox)
+                if 'score' in ann:
+                    ax.text(bbox_x, bbox_y, '%.2f' % (ann['score']),
+                            color='white', fontdict={'size': 7})
         # option for filling bounding box
         # p = PatchCollection(polygons, facecolor=color, linewidths=0, alpha=0.4)
         # ax.add_collection(p)
-        p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
+        if simple_type:
+            p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=1)
+        else:
+            p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
         ax.add_collection(p)
 
     def loadRes(self, resFile):
